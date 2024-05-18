@@ -1,9 +1,11 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"net"
 	"os"
+	"path"
 	"strings"
 )
 
@@ -14,7 +16,7 @@ type (
 		method      string
 		path        string
 		headers     map[string]string
-		body        string
+		body        []byte
 	}
 
 	Response struct {
@@ -22,7 +24,7 @@ type (
 		code        int
 		status      string
 		headers     []string
-		body        string
+		body        []byte
 	}
 )
 
@@ -34,16 +36,23 @@ func main() {
 		os.Exit(1)
 	}
 
-	conn, err := l.Accept()
-	if err != nil {
-		fmt.Println("Error accepting connection: ", err.Error())
-		os.Exit(1)
-	}
-	defer conn.Close()
+	for {
+		conn, err := l.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection: ", err.Error())
+			os.Exit(1)
+		}
 
+		go handleConnection(conn)
+	}
+}
+
+func handleConnection(conn net.Conn) {
 	buf := make([]byte, 4096)
-	conn.Read(buf)
-	fmt.Println(string(buf))
+	_, err := conn.Read(buf)
+	if err != nil {
+		return
+	}
 
 	req, _ := parseRequest(string(buf))
 	res := &Response{
@@ -51,25 +60,51 @@ func main() {
 		body:        req.body,
 	}
 
-	param, found := strings.CutPrefix(req.path, "/echo/")
 	if req.path == "/" {
 		res.code = 200
 		write(conn, res)
 	} else if req.path == "/user-agent" {
 		res.code = 200
-		res.body = req.headers["User-Agent"]
+		res.body = []byte(req.headers["User-Agent"])
 		res.headers = []string{"Content-Type: text/plain", fmt.Sprintf("Content-Length: %d", len(res.body))}
 		write(conn, res)
-	} else if found {
+	} else if strings.HasPrefix(req.path, "/echo/") {
+		param, _ := strings.CutPrefix(req.path, "/echo/")
+
 		res.code = 200
-		res.body = param
+		res.body = []byte(param)
 		res.headers = []string{"Content-Type: text/plain", fmt.Sprintf("Content-Length: %d", len(res.body))}
 		write(conn, res)
+	} else if strings.HasPrefix(req.path, "/files/") && req.method == "GET" {
+		dir := os.Args[2]
+		filename := strings.TrimPrefix(req.path, "/files/")
+		buf, err := os.ReadFile(path.Join(dir, filename))
+		if err != nil {
+			res.code = 404
+			write(conn, res)
+		} else {
+			res.code = 200
+			res.body = buf
+			res.headers = []string{"Content-Type: application/octet-stream", fmt.Sprintf("Content-Length: %d", len(res.body))}
+			write(conn, res)
+		}
+	} else if strings.HasPrefix(req.path, "/files/") && req.method == "POST" {
+		dir := os.Args[2]
+		filename := strings.TrimPrefix(req.path, "/files/")
+		err := os.WriteFile(path.Join(dir, filename), bytes.Trim(req.body, "\x00"), 0644)
+		if err != nil {
+			res.code = 404
+			write(conn, res)
+		} else {
+			res.code = 201
+			res.body = []byte("")
+			res.headers = []string{}
+			write(conn, res)
+		}
 	} else {
 		res.code = 404
 		write(conn, res)
 	}
-
 }
 
 func write(conn net.Conn, res *Response) {
@@ -91,7 +126,6 @@ func parseRequest(s string) (req *Request, ok bool) {
 	method, after1, ok1 := strings.Cut(s, " ")
 	path, after2, ok2 := strings.Cut(after1, " ")
 	httpversion, after3, ok3 := strings.Cut(after2, "\r\n")
-	fmt.Println("after3:", after3)
 
 	if !ok1 || !ok2 || !ok3 {
 		return nil, false
@@ -104,7 +138,7 @@ func parseRequest(s string) (req *Request, ok bool) {
 	req.method = method
 	req.path = path
 	req.headers = mapheaders(strings.Split(rawheaders, "\r\n"))
-	req.body = rawbody
+	req.body = []byte(rawbody)
 
 	fmt.Printf("httpversion: %s\n", req.httpversion)
 	fmt.Printf("method: %s\n", req.method)
@@ -124,6 +158,8 @@ func httpstatus(code int) string {
 	switch code {
 	case 200:
 		return "OK"
+	case 201:
+		return "Created"
 	case 404:
 		return "Not Found"
 	default:
