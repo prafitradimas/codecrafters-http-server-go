@@ -19,12 +19,8 @@ type (
 		body        []byte
 	}
 
-	Response struct {
-		httpversion string
-		code        int
-		status      string
-		headers     []string
-		body        []byte
+	ResponseWriter struct {
+		conn net.Conn
 	}
 )
 
@@ -48,90 +44,85 @@ func main() {
 }
 
 func handleConnection(conn net.Conn) {
+	writter := ResponseWriter{conn: conn}
 	buf := make([]byte, 4096)
+
 	_, err := conn.Read(buf)
 	if err != nil {
 		return
 	}
+	defer conn.Close()
 
-	req, _ := parseRequest(string(buf))
-	res := &Response{
-		httpversion: "1.1",
-		body:        req.body,
+	req, ok := parseRequest(string(buf))
+	if !ok {
+		writter.write(400, nil, nil)
 	}
 
 	if req.path == "/" {
-		res.code = 200
-		write(conn, res)
+		writter.write(200, nil, nil)
 	} else if req.path == "/user-agent" {
-		res.code = 200
-		res.body = []byte(req.headers["User-Agent"])
-		res.headers = []string{"Content-Type: text/plain", fmt.Sprintf("Content-Length: %d", len(res.body))}
-		write(conn, res)
+		writter.write(
+			200,
+			map[string]string{
+				"Content-Type":   "text/plain",
+				"Content-Length": fmt.Sprintf("%d", len(req.headers["User-Agent"])),
+			},
+			[]byte(req.headers["User-Agent"]),
+		)
 	} else if strings.HasPrefix(req.path, "/echo/") {
 		param, _ := strings.CutPrefix(req.path, "/echo/")
 
-		res.code = 200
-		res.body = []byte(param)
-		res.headers = []string{"Content-Type: text/plain", fmt.Sprintf("Content-Length: %d", len(res.body))}
-		write(conn, res)
-	} else if strings.HasPrefix(req.path, "/files/") && req.method == "GET" {
+		writter.write(
+			200,
+			map[string]string{
+				"Content-Type":   "text/plain",
+				"Content-Length": fmt.Sprintf("%d", len(param)),
+			},
+			[]byte(param),
+		)
+	} else if req.method == "GET" && strings.HasPrefix(req.path, "/files/") {
 		dir := os.Args[2]
 		filename := strings.TrimPrefix(req.path, "/files/")
-		buf, err := os.ReadFile(path.Join(dir, filename))
+		data, err := os.ReadFile(path.Join(dir, filename))
 		if err != nil {
-			res.code = 404
-			write(conn, res)
+			writter.write(404, nil, nil)
 		} else {
-			res.code = 200
-			res.body = buf
-			res.headers = []string{"Content-Type: application/octet-stream", fmt.Sprintf("Content-Length: %d", len(res.body))}
-			write(conn, res)
+			writter.write(
+				200,
+				map[string]string{
+					"Content-Type":   "application/octet-stream",
+					"Content-Length": fmt.Sprintf("%d", len(data)),
+				},
+				[]byte(data),
+			)
 		}
-	} else if strings.HasPrefix(req.path, "/files/") && req.method == "POST" {
+	} else if req.method == "POST" && strings.HasPrefix(req.path, "/files/") {
 		dir := os.Args[2]
 		filename := strings.TrimPrefix(req.path, "/files/")
-		err := os.WriteFile(path.Join(dir, filename), bytes.Trim(req.body, "\x00"), 0644)
+		data := bytes.Trim(req.body, "\x00") // trim excess bytes
+		err := os.WriteFile(path.Join(dir, filename), data, 0644)
 		if err != nil {
-			res.code = 404
-			write(conn, res)
+			writter.write(404, nil, nil)
 		} else {
-			res.code = 201
-			res.body = []byte("")
-			res.headers = []string{}
-			write(conn, res)
+			writter.write(201, nil, nil)
 		}
 	} else {
-		res.code = 404
-		write(conn, res)
-	}
-}
-
-func write(conn net.Conn, res *Response) {
-	headers := ""
-	if 0 < len(res.headers) {
-		headers = strings.Join(res.headers, "\r\n")
-	}
-
-	status := httpstatus(res.code)
-	respstr := fmt.Sprintf("HTTP/%s %d %s\r\n%s\r\n\r\n%s", res.httpversion, res.code, status, headers, res.body)
-	_, err := conn.Write([]byte(respstr))
-
-	if err != nil {
-		fmt.Printf("%v", err)
+		writter.write(404, nil, nil)
 	}
 }
 
 func parseRequest(s string) (req *Request, ok bool) {
 	method, after1, ok1 := strings.Cut(s, " ")
 	path, after2, ok2 := strings.Cut(after1, " ")
-	httpversion, after3, ok3 := strings.Cut(after2, "\r\n")
+	httpversion, rawHeadersAndBody, ok3 := strings.Cut(after2, "\r\n")
 
 	if !ok1 || !ok2 || !ok3 {
 		return nil, false
 	}
 
-	rawheaders, rawbody := separateHeadersAndBody(after3)
+	split := strings.Split(rawHeadersAndBody, "\r\n\r\n")
+	rawheaders := split[0]
+	rawbody := split[1]
 
 	req = &Request{}
 	req.httpversion = httpversion
@@ -140,36 +131,11 @@ func parseRequest(s string) (req *Request, ok bool) {
 	req.headers = mapheaders(strings.Split(rawheaders, "\r\n"))
 	req.body = []byte(rawbody)
 
-	fmt.Printf("httpversion: %s\n", req.httpversion)
-	fmt.Printf("method: %s\n", req.method)
-	fmt.Printf("path: %s\n", req.path)
-	fmt.Printf("headers: %v\n", req.headers)
-	fmt.Printf("body: %v\n", req.body)
 	return req, true
-}
-
-func separateHeadersAndBody(s string) (rawheaders, rawbody string) {
-	split := strings.Split(s, "\r\n\r\n")
-
-	return split[0], split[1]
-}
-
-func httpstatus(code int) string {
-	switch code {
-	case 200:
-		return "OK"
-	case 201:
-		return "Created"
-	case 404:
-		return "Not Found"
-	default:
-		return "OK"
-	}
 }
 
 func mapheaders(ss []string) map[string]string {
 	headers := make(map[string]string)
-	fmt.Println(ss)
 	for _, s := range ss {
 		split := strings.Split(s, ": ")
 		if 2 != len(split) {
@@ -180,4 +146,42 @@ func mapheaders(ss []string) map[string]string {
 	}
 
 	return headers
+}
+
+func httpstatus(code int) string {
+	switch code {
+	case 200:
+		return "OK"
+	case 201:
+		return "Created"
+	case 400:
+		return "Bad Request"
+	case 404:
+		return "Not Found"
+	default:
+		return "I'm a teapot"
+	}
+}
+
+func (w ResponseWriter) write(status int, headers map[string]string, body []byte) error {
+	h := strings.Builder{}
+	if headers != nil && 0 < len(headers) {
+		for k, v := range headers {
+			_, err := h.WriteString(fmt.Sprintf("%s: %s\r\n", k, v))
+			if err != nil {
+				panic(err)
+			}
+		}
+	}
+
+	statusline := fmt.Sprintf("HTTP/1.1 %d %s", status, httpstatus(status))
+	resp := statusline + "\r\n" + h.String() + "\r\n" + string(body)
+	_, err := w.conn.Write([]byte(resp))
+
+	if err != nil {
+		fmt.Printf("%v", err)
+		return err
+	}
+
+	return nil
 }
