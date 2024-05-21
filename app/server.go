@@ -71,14 +71,23 @@ func handleConnection(conn net.Conn) {
 		)
 	} else if strings.HasPrefix(req.path, "/echo/") {
 		param, _ := strings.CutPrefix(req.path, "/echo/")
+		respbody := []byte(param)
+		respstatus := 200
+
+		respheaders := make(map[string]string)
+		respheaders["Content-Type"] = "text/plain"
+		respheaders["Content-Length"] = fmt.Sprintf("%d", len(param))
+		if contentEncoding, found := req.headers["Accept-Encoding"]; found {
+			switch contentEncoding {
+			case "gzip":
+				respheaders["Content-Encoding"] = "gzip"
+			}
+		}
 
 		writter.write(
-			200,
-			map[string]string{
-				"Content-Type":   "text/plain",
-				"Content-Length": fmt.Sprintf("%d", len(param)),
-			},
-			[]byte(param),
+			respstatus,
+			respheaders,
+			respbody,
 		)
 	} else if req.method == "GET" && strings.HasPrefix(req.path, "/files/") {
 		dir := os.Args[2]
