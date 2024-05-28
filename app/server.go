@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"compress/gzip"
 	"fmt"
 	"net"
 	"os"
@@ -75,13 +76,19 @@ func handleConnection(conn net.Conn) {
 		respstatus := 200
 
 		respheaders := make(map[string]string)
-		respheaders["Content-Type"] = "text/plain"
-		respheaders["Content-Length"] = fmt.Sprintf("%d", len(param))
 		if contentEncodings, found := req.headers[strings.ToUpper("Accept-Encoding")]; found {
 			if strings.Contains(contentEncodings, "gzip") {
 				respheaders["Content-Encoding"] = "gzip"
+				buffer := new(bytes.Buffer)
+				writter := gzip.NewWriter(buffer)
+				writter.Write(respbody)
+				writter.Close()
+				respbody = buffer.Bytes()
 			}
 		}
+
+		respheaders["Content-Type"] = "text/plain"
+		respheaders["Content-Length"] = fmt.Sprintf("%d", len(respbody))
 
 		writter.write(
 			respstatus,
