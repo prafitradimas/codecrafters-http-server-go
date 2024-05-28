@@ -65,9 +65,9 @@ func handleConnection(conn net.Conn) {
 			200,
 			map[string]string{
 				"Content-Type":   "text/plain",
-				"Content-Length": fmt.Sprintf("%d", len(req.headers["User-Agent"])),
+				"Content-Length": fmt.Sprintf("%d", len(req.headers[strings.ToUpper("User-Agent")])),
 			},
-			[]byte(req.headers["User-Agent"]),
+			[]byte(req.headers[strings.ToUpper("User-Agent")]),
 		)
 	} else if strings.HasPrefix(req.path, "/echo/") {
 		param, _ := strings.CutPrefix(req.path, "/echo/")
@@ -77,9 +77,8 @@ func handleConnection(conn net.Conn) {
 		respheaders := make(map[string]string)
 		respheaders["Content-Type"] = "text/plain"
 		respheaders["Content-Length"] = fmt.Sprintf("%d", len(param))
-		if contentEncoding, found := req.headers["Accept-Encoding"]; found {
-			switch contentEncoding {
-			case "gzip":
+		if contentEncodings, found := req.headers[strings.ToUpper("Accept-Encoding")]; found {
+			if strings.Contains(contentEncodings, "gzip") {
 				respheaders["Content-Encoding"] = "gzip"
 			}
 		}
@@ -151,7 +150,7 @@ func mapheaders(ss []string) map[string]string {
 			panic("ERROR: Malformed header")
 		}
 
-		headers[split[0]] = split[1]
+		headers[strings.ToUpper(split[0])] = split[1]
 	}
 
 	return headers
